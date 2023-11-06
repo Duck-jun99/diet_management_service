@@ -1,1 +1,14 @@
-모바일/웹서비스프로젝트 중간고사 과제
+식단 관리 안드로이드 앱
+---
+
+Client_System
+---
+> Android client
+
+Service_System
+---
+> Django
+
+Edge_System
+---
+>YoloV5

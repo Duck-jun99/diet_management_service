@@ -11,7 +11,7 @@ Usage - sources:
                                                      list.txt                        # list of images
                                                      list.streams                    # list of streams
                                                      'path/*.jpg'                    # glob
-                                                     'https://youtu.be/LNwODJXcvt4'  # YouTube
+                                                     'https://youtu.be/Zgi9g1ksQHc'  # YouTube
                                                      'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
 
 Usage - formats:
@@ -28,8 +28,14 @@ Usage - formats:
                                  yolov5s_paddle_model       # PaddlePaddle
 """
 
+from changedetection import ChangeDetection
+from utils.torch_utils import select_device, smart_inference_mode
+from utils.plots import Annotator, colors, save_one_box
+from utils.general import (LOGGER, Profile, check_file, check_img_size, check_imshow, check_requirements, colorstr, cv2,
+                           increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadScreenshots, LoadStreams
+from models.common import DetectMultiBackend
 import argparse
-import csv
 import os
 import platform
 import sys
@@ -42,14 +48,6 @@ ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
-
-from ultralytics.utils.plotting import Annotator, colors, save_one_box
-
-from models.common import DetectMultiBackend
-from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadScreenshots, LoadStreams
-from utils.general import (LOGGER, Profile, check_file, check_img_size, check_imshow, check_requirements, colorstr, cv2,
-                           increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
-from utils.torch_utils import select_device, smart_inference_mode
 
 
 @smart_inference_mode()
@@ -64,7 +62,6 @@ def run(
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         view_img=False,  # show results
         save_txt=False,  # save results to *.txt
-        save_csv=False,  # save results in CSV format
         save_conf=False,  # save confidences in --save-txt labels
         save_crop=False,  # save cropped prediction boxes
         nosave=False,  # do not save images/videos
@@ -101,7 +98,7 @@ def run(
     model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
-
+    cd = ChangeDetection(names)
     # Dataloader
     bs = 1  # batch_size
     if webcam:
@@ -116,6 +113,7 @@ def run(
 
     # Run inference
     model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
+    detected = [0 for i in range(len(names))]
     seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
     for path, im, im0s, vid_cap, s in dataset:
         with dt[0]:
@@ -137,18 +135,6 @@ def run(
         # Second-stage classifier (optional)
         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
 
-        # Define the path for the CSV file
-        csv_path = save_dir / 'predictions.csv'
-
-        # Create or append to the CSV file
-        def write_to_csv(image_name, prediction, confidence):
-            data = {'Image Name': image_name, 'Prediction': prediction, 'Confidence': confidence}
-            with open(csv_path, mode='a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=data.keys())
-                if not csv_path.is_file():
-                    writer.writeheader()
-                writer.writerow(data)
-
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
@@ -164,7 +150,7 @@ def run(
             s += '%gx%g ' % im.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             imc = im0.copy() if save_crop else im0  # for save_crop
-            annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+            annotator = Annotator(im0, line_width=line_thickness, example=str('가나다'))
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
@@ -176,27 +162,107 @@ def run(
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
-                    c = int(cls)  # integer class
-                    label = names[c] if hide_conf else f'{names[c]}'
-                    confidence = float(conf)
-                    confidence_str = f'{confidence:.2f}'
-
-                    if save_csv:
-                        write_to_csv(p.name, label, confidence_str)
-
+                    detected[int(cls)] = 1
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+                        print(line)
                         with open(f'{txt_path}.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
                         label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
-                        annotator.box_label(xyxy, label, color=colors(c, True))
+                        food_dic = {
+                            'person': '사람',
+                            'bicycle': '자전거',
+                            'car': '자동차',
+                            'motorcycle': '오토바이',
+                            'airplane': '비행기',
+                            'bus': '버스',
+                            'train': '기차',
+                            'truck': '트럭',
+                            'boat': '보트',
+                            'traffic light': '신호등',
+                            'fire hydrant': '소화전',
+                            'stop sign': '정지 신호',
+                            'parking meter': '주차 미터',
+                            'bench': '벤치',
+                            'bird': '새',
+                            'cat': '고양이',
+                            'dog': '개',
+                            'horse': '말',
+                            'sheep': '양',
+                            'cow': '소',
+                            'elephant': '코끼리',
+                            'bear': '곰',
+                            'zebra': '얼룩말',
+                            'giraffe': '기린',
+                            'backpack': '배낭',
+                            'umbrella': '우산',
+                            'handbag': '핸드백',
+                            'tie': '넥타이',
+                            'suitcase': '여행 가방',
+                            'frisbee': '프리스비',
+                            'skis': '스키',
+                            'snowboard': '스노보드',
+                            'sports ball': '스포츠 공',
+                            'kite': '연',
+                            'baseball bat': '야구방망이',
+                            'baseball glove': '야구 글러브',
+                            'skateboard': '스케이트보드',
+                            'surfboard': '서핑 보드',
+                            'tennis racket': '테니스 라켓',
+                            'bottle': '병',
+                            'wine glass': '와인 잔',
+                            'cup': '컵',
+                            'fork': '포크',
+                            'knife': '칼',
+                            'spoon': '숟가락',
+                            'bowl': '그릇',
+                            'banana': '바나나',
+                            'apple': '사과',
+                            'sandwich': '샌드위치',
+                            'orange': '오렌지',
+                            'broccoli': '브로콜리',
+                            'carrot': '당근',
+                            'hot dog': '핫도그',
+                            'pizza': '피자',
+                            'donut': '도넛',
+                            'cake': '케이크',
+                            'chair': '의자',
+                            'couch': '소파',
+                            'potted plant': '화분',
+                            'bed': '침대',
+                            'dining table': '식탁',
+                            'toilet': '화장실',
+                            'tv': '텔레비전',
+                            'laptop': '노트북',
+                            'mouse': '마우스',
+                            'remote': '리모컨',
+                            'keyboard': '키보드',
+                            'cell phone': '휴대폰',
+                            'microwave': '전자레인지',
+                            'oven': '오븐',
+                            'toaster': '토스터',
+                            'sink': '싱크대',
+                            'refrigerator': '냉장고',
+                            'book': '책',
+                            'clock': '시계',
+                            'vase': '꽃병',
+                            'scissors': '가위',
+                            'teddy bear': '곰 인형',
+                            'hair drier': '헤어 드라이어',
+                            'toothbrush': '칫솔',
+                            'dining':'식사'
+                        }
+
+                        label_acc = label.split(' ')
+                        new_label = food_dic[label_acc[0]]
+                        annotator.box_label(xyxy, new_label, color=colors(c, True))
                     if save_crop:
                         save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
-
+            cd.add(new_label, detected, save_dir, im0)
             # Stream results
             im0 = annotator.result()
             if view_img:
@@ -251,7 +317,6 @@ def parse_opt():
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-csv', action='store_true', help='save results in CSV format')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
